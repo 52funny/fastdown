@@ -189,6 +189,10 @@ func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64, re *Resume
 		if err != nil {
 			continue
 		}
+		if resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			continue
+		}
 		for l < to {
 			rn, err := resp.Body.Read(buf)
 			if err != nil && err != io.EOF || rn == 0 {
