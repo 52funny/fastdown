@@ -38,10 +38,12 @@ func NewDownloadWrapper(url string, concurrent int, path string, fileName string
 	}, nil
 }
 
+// Set the path of the resume file.
 func (dw *DownloadWrapper) SetResumePath(path string) {
 	dw.resumePath = path
 }
 
+// Download the file.
 func (dw *DownloadWrapper) Download() error {
 	// Prepare the downloading
 	err := dw.perpare()
@@ -58,6 +60,7 @@ func (dw *DownloadWrapper) Download() error {
 	return nil
 }
 
+// Using io.Copy to download the file
 func (dw *DownloadWrapper) normalDownload() error {
 	f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
 	if err != nil {
@@ -80,15 +83,24 @@ func (dw *DownloadWrapper) normalDownload() error {
 	return nil
 }
 
+// Download the file with range, the concurrent is the number of the goroutines to download the file.
 func (dw *DownloadWrapper) rangeDownload() error {
 	exist := exists(filepath.Join(dw.resumePath, dw.resumeName))
 	switch exist {
 	case true:
-		f, err := os.OpenFile(filepath.Join(dw.filePath, dw.fileName), os.O_RDWR, 0666)
-		if err != nil {
-			return err
+		if !exists(filepath.Join(dw.filePath, dw.fileName)) {
+			f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
+			if err != nil {
+				return err
+			}
+			dw.file = f
+		} else {
+			f, err := os.OpenFile(filepath.Join(dw.filePath, dw.fileName), os.O_RDWR, 0666)
+			if err != nil {
+				return err
+			}
+			dw.file = f
 		}
-		dw.file = f
 	case false:
 		f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
 		if err != nil {
@@ -111,6 +123,7 @@ func (dw *DownloadWrapper) rangeDownload() error {
 			if from >= dw.length {
 				break
 			}
+			// The last chunk, avoid the out of range
 			if to > dw.length {
 				to = dw.length
 			}
@@ -141,6 +154,7 @@ func (dw *DownloadWrapper) rangeDownload() error {
 	return nil
 }
 
+// Prepare the downloading, it will get the contentLength of the file and check if the server support range.
 func (dw *DownloadWrapper) perpare() error {
 	resp, err := http.Get(dw.url)
 	if err != nil {
@@ -158,6 +172,7 @@ func (dw *DownloadWrapper) perpare() error {
 	return nil
 }
 
+// Every goroutine download a chunk of the file.
 func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64, re *Resume, wait *sync.WaitGroup) error {
 	defer wait.Done()
 	// defer fmt.Println("done", i, from, to)
@@ -169,7 +184,7 @@ func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64, re *Resume
 			continue
 		}
 		r := NewRange(l, to)
-		req.Header.Add("Range", r.String())
+		req.Header.Add("Range", r.HeaderStr())
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			continue

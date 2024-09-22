@@ -1,6 +1,7 @@
 package fastdown_test
 
 import (
+	"os"
 	"testing"
 
 	"github.com/52funny/fastdown"
@@ -18,7 +19,7 @@ func TestResume(t *testing.T) {
 		{70, 80},
 		{80, 90},
 	}
-	r, err := fastdown.NewResume("./", "abc.txt.resume", 8, ranges)
+	r, err := fastdown.NewResume(os.TempDir(), "abc.txt.resume", 8, ranges)
 	assert.Nil(t, err)
 	defer r.Close()
 	assert.Equal(t, 8, r.Concurrent)

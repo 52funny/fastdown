@@ -9,17 +9,23 @@ import (
 	"path/filepath"
 )
 
+// Resume is the struct of resumes.
+// The file is to store the resumes logs.
 type Resume struct {
 	ResumeLogs
 	file *os.File
 	new  bool
 }
 
+// ResumeLogs is the struct of resume logs, it will be saved to the resume file.
+// The Concurrent is the number of concurrent download tasks.
+// The scope of the Range is [from, to).
 type ResumeLogs struct {
 	Concurrent int     `json:"concurrent"`
 	Ranges     []Range `json:"ranges"`
 }
 
+// NewResume creates a new resume instance.
 func NewResume(path string, name string, concurrent int, ranges []Range) (*Resume, error) {
 	if concurrent != len(ranges) {
 		panic("concurrent should be equal to the number of ranges")
@@ -49,6 +55,7 @@ func NewResume(path string, name string, concurrent int, ranges []Range) (*Resum
 	return r, nil
 }
 
+// RecoverResume recovers the resume instance from the resume file.
 func RecoverResume(path string, name string) (*Resume, error) {
 	f, err := os.Open(filepath.Join(path, name))
 	if err != nil {
@@ -78,6 +85,7 @@ func RecoverResume(path string, name string) (*Resume, error) {
 	return r, nil
 }
 
+// Update the i-th range.
 func (resume *Resume) Update(i int, r Range) error {
 	resume.Ranges[i] = r
 	buf := make([]byte, 16)
@@ -93,6 +101,7 @@ func (resume *Resume) Update(i int, r Range) error {
 	return nil
 }
 
+// Close the resume file, and remove the resume file.
 func (resume *Resume) Close() error {
 	err := resume.file.Close()
 	if err != nil {
@@ -102,6 +111,7 @@ func (resume *Resume) Close() error {
 	return os.Remove(resume.file.Name())
 }
 
+// Check if the file exists.
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
