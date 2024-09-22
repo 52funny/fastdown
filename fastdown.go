@@ -85,36 +85,42 @@ func (dw *DownloadWrapper) normalDownload() error {
 
 // Download the file with range, the concurrent is the number of the goroutines to download the file.
 func (dw *DownloadWrapper) rangeDownload() error {
-	exist := exists(filepath.Join(dw.resumePath, dw.resumeName))
-	switch exist {
+	var resume *Resume
+	existResume := exists(filepath.Join(dw.resumePath, dw.resumeName))
+	existFile := exists(filepath.Join(dw.filePath, dw.fileName))
+
+	// The download strategy:
+	// +-------------+-----------+------------------+
+	// | existResume | existFile | op               |
+	// +=============+===========+==================+
+	// | 1           | 1         | Resume download  |
+	// | 1           | 0         | Restart download |
+	// | 0           | 1         | Restart download |
+	// | 0           | 0         | Restart download |
+	// +-------------+-----------+------------------+
+
+	switch existResume && existFile {
 	case true:
-		if !exists(filepath.Join(dw.filePath, dw.fileName)) {
-			f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
-			if err != nil {
-				return err
-			}
-			dw.file = f
-		} else {
-			f, err := os.OpenFile(filepath.Join(dw.filePath, dw.fileName), os.O_RDWR, 0666)
-			if err != nil {
-				return err
-			}
-			dw.file = f
+		f, err := os.OpenFile(filepath.Join(dw.filePath, dw.fileName), os.O_RDWR, 0666)
+		if err != nil {
+			return err
 		}
+		dw.file = f
+
+		// Recover the download
+		re, err := RecoverResume(dw.resumePath, dw.resumeName)
+		if err != nil {
+			return err
+		}
+		resume = re
 	case false:
 		f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
 		if err != nil {
 			return err
 		}
 		dw.file = f
-	}
 
-	// Close the file
-	defer dw.file.Close()
-
-	var resume *Resume
-	switch exist {
-	case false:
+		// Create the new ranges and restart the download
 		ranges := make([]Range, dw.concurrent)
 		chunkSize := (dw.length + int64(dw.concurrent) - 1) / int64(dw.concurrent)
 		for i := 0; i < dw.concurrent; i++ {
@@ -134,13 +140,10 @@ func (dw *DownloadWrapper) rangeDownload() error {
 			return err
 		}
 		resume = re
-	case true:
-		re, err := RecoverResume(dw.resumePath, dw.resumeName)
-		if err != nil {
-			return err
-		}
-		resume = re
 	}
+
+	// Close the file
+	defer dw.file.Close()
 
 	// CLose the resume
 	defer resume.Close()
