@@ -13,8 +13,8 @@ func (r Range) String() string {
 }
 
 func NewRange(from int64, to int64) Range {
-	if from < 0 || from >= to {
-		panic("invalid range")
+	if from < 0 || from > to {
+		panic("invalid range " + fmt.Sprintf("from: %d, to: %d", from, to))
 	}
 	return Range{
 		From: from,

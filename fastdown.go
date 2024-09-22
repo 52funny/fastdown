@@ -1,6 +1,7 @@
 package fastdown
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,22 +13,33 @@ import (
 type DownloadWrapper struct {
 	url          string
 	length       int64
-	concurrent   int64
+	concurrent   int
 	file         *os.File
 	supportRange bool
+	filePath     string
+	fileName     string
+	// default is os.TempDir()
+	resumePath string
+	// default is sha256(path + name)[:8]
+	resumeName string
 }
 
-func NewDownloadWrapper(url string, concurrent int64, path string, name string) (*DownloadWrapper, error) {
-	file, err := os.Create(filepath.Join(path, name))
-	if err != nil {
-		return nil, err
-	}
+func NewDownloadWrapper(url string, concurrent int, path string, fileName string) (*DownloadWrapper, error) {
+	hash := sha256.Sum256([]byte(filepath.Join(path, fileName)))
 	return &DownloadWrapper{
 		url:        url,
 		length:     -1,
 		concurrent: concurrent,
-		file:       file,
+		file:       nil,
+		filePath:   path,
+		fileName:   fileName,
+		resumePath: os.TempDir(),
+		resumeName: fmt.Sprintf("%x", hash[:8]),
 	}, nil
+}
+
+func (dw *DownloadWrapper) SetResumePath(path string) {
+	dw.resumePath = path
 }
 
 func (dw *DownloadWrapper) Download() error {
@@ -36,9 +48,9 @@ func (dw *DownloadWrapper) Download() error {
 	if err != nil {
 		return err
 	}
+
 	switch dw.supportRange {
 	case true:
-
 		return dw.rangeDownload()
 	case false:
 		return dw.normalDownload()
@@ -47,6 +59,11 @@ func (dw *DownloadWrapper) Download() error {
 }
 
 func (dw *DownloadWrapper) normalDownload() error {
+	f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
+	if err != nil {
+		return err
+	}
+	dw.file = f
 	resp, err := http.Get(dw.url)
 	if err != nil {
 		return err
@@ -59,28 +76,66 @@ func (dw *DownloadWrapper) normalDownload() error {
 		os.Remove(dw.file.Name())
 		return err
 	}
+	dw.file.Close()
 	return nil
 }
 
 func (dw *DownloadWrapper) rangeDownload() error {
+	exist := exists(filepath.Join(dw.resumePath, dw.resumeName))
+	switch exist {
+	case true:
+		f, err := os.OpenFile(filepath.Join(dw.filePath, dw.fileName), os.O_RDWR, 0666)
+		if err != nil {
+			return err
+		}
+		dw.file = f
+	case false:
+		f, err := os.Create(filepath.Join(dw.filePath, dw.fileName))
+		if err != nil {
+			return err
+		}
+		dw.file = f
+	}
+
 	// Close the file
 	defer dw.file.Close()
 
-	chunkSize := (dw.length + dw.concurrent - 1) / dw.concurrent
-	fmt.Println("chunkSize", chunkSize)
+	var resume *Resume
+	switch exist {
+	case false:
+		ranges := make([]Range, dw.concurrent)
+		chunkSize := (dw.length + int64(dw.concurrent) - 1) / int64(dw.concurrent)
+		for i := 0; i < dw.concurrent; i++ {
+			from := int64(i) * chunkSize
+			to := from + chunkSize
+			if from >= dw.length {
+				break
+			}
+			if to > dw.length {
+				to = dw.length
+			}
+			ranges[i] = NewRange(from, to)
+		}
+		re, err := NewResume(dw.resumePath, dw.resumeName, int(dw.concurrent), ranges)
+		if err != nil {
+			return err
+		}
+		resume = re
+	case true:
+		re, err := RecoverResume(dw.resumePath, dw.resumeName)
+		if err != nil {
+			return err
+		}
+		resume = re
+	}
+
+	// CLose the resume
+	defer resume.Close()
+
 	wait := sync.WaitGroup{}
-	for i := int64(0); i < dw.concurrent; i++ {
-		from := i * chunkSize
-		to := from + chunkSize
-		if from >= dw.length {
-			break
-		}
-		if to > dw.length {
-			to = dw.length
-		}
-		fmt.Println(from, to)
+	for i, r := range resume.Ranges {
 		wait.Add(1)
-		go dw.downloadChunk(from, to, &wait)
+		go dw.downloadChunk(i, r.From, r.To, resume, &wait)
 	}
 	wait.Wait()
 	return nil
@@ -97,15 +152,16 @@ func (dw *DownloadWrapper) perpare() error {
 	if ranges == "bytes" {
 		dw.supportRange = true
 	}
-	fmt.Println("contentLength", dw.length)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("prepare status code not 200")
+	}
 	return nil
 }
 
-func (dw *DownloadWrapper) downloadChunk(from int64, to int64, wait *sync.WaitGroup) error {
+func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64, re *Resume, wait *sync.WaitGroup) error {
 	defer wait.Done()
-	defer fmt.Println("done", from, to)
+	// defer fmt.Println("done", i, from, to)
 	buf := make([]byte, 1024*8)
-	// writren := 0
 	l := from
 	for l < to {
 		req, err := http.NewRequest(http.MethodGet, dw.url, nil)
@@ -120,18 +176,15 @@ func (dw *DownloadWrapper) downloadChunk(from int64, to int64, wait *sync.WaitGr
 		}
 		for l < to {
 			rn, err := resp.Body.Read(buf)
-			if err != nil && err != io.EOF {
-				break
-			}
-			if rn == 0 {
+			if err != nil && err != io.EOF || rn == 0 {
 				break
 			}
 			wn, err := dw.file.WriteAt(buf[:rn], l)
-
-			l += int64(wn)
-			if err != nil {
+			if err != nil || wn != rn {
 				break
 			}
+			l += int64(wn)
+			re.Update(i, NewRange(l, to))
 		}
 		resp.Body.Close()
 	}
