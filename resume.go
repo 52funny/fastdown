@@ -103,11 +103,11 @@ func (resume *Resume) Update(i int, r Range) error {
 
 // Close the resume file, and remove the resume file.
 func (resume *Resume) Close() error {
-	err := resume.file.Close()
-	if err != nil {
-		return err
-	}
-	// Remove resume file if all ranges are downloaded
+	return resume.file.Close()
+}
+
+// Remove resume file if all ranges are downloaded
+func (resume *Resume) Remove() error {
 	return os.Remove(resume.file.Name())
 }
 
