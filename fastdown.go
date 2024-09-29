@@ -1,14 +1,15 @@
 package fastdown
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
-	"sync/atomic"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type DownloadWrapper struct {
@@ -134,30 +135,24 @@ func (dw *DownloadWrapper) rangeDownload() error {
 	// CLose the resume
 	defer dw.resume.Close()
 
-	wait := sync.WaitGroup{}
-	var counter int32
+	// Remove the resume file
+	defer dw.resume.Remove()
+
+	group, _ := errgroup.WithContext(context.Background())
+
 	for i, r := range dw.resume.Ranges {
-		wait.Add(1)
-		go dw.downloadChunk(i, r.From, r.To, &wait, &counter)
+		group.Go(func() error {
+			return dw.downloadChunk(i, r.From, r.To)
+		})
 	}
-	wait.Wait()
-	if counter == int32(dw.resume.Concurrent) {
-		dw.resume.Remove()
-	} else {
-		return fmt.Errorf("download not completed")
+	if err := group.Wait(); err != nil {
+		return err
 	}
 	return nil
 }
 
 // Every goroutine download a chunk of the file.
-func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64, wait *sync.WaitGroup, counter *int32) error {
-	defer wait.Done()
-
-	if from == to {
-		atomic.AddInt32(counter, 1)
-		return nil
-	}
-
+func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64) error {
 	req, err := http.NewRequest(http.MethodGet, dw.url, nil)
 	if err != nil {
 		return err
@@ -181,9 +176,8 @@ func (dw *DownloadWrapper) downloadChunk(i int, from int64, to int64, wait *sync
 	if err != nil {
 		return err
 	}
-
-	if wn == to-from {
-		atomic.AddInt32(counter, 1)
+	if wn != to-from {
+		return fmt.Errorf("download chunk %d failed: %v", i, io.ErrShortWrite)
 	}
 	return nil
 }
